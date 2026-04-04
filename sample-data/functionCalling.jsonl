@@ -1,0 +1,2 @@
+{"messages": [{"role": "user", "content": "東京の明日の天気は？"}, {"role": "assistant", "function_call": {"name": "get_weather", "arguments": "{\"location\": \"Tokyo\", \"day\": \"tomorrow\"}"}}]}
+{"messages": [{"role": "user", "content": "123 * 456 を計算して。"}, {"role": "assistant", "function_call": {"name": "calculator", "arguments": "{\"expression\": \"123 * 456\"}"}}]}

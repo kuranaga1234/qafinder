@@ -1,0 +1,7 @@
+[
+  {
+    "instruction": "次の文章を日本語に翻訳してください。",
+    "input": "Hello, how are you today?",
+    "output": "こんにちは、今日の調子はいかがですか？"
+  }
+]

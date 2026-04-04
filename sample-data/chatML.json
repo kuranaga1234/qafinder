@@ -1,0 +1,7 @@
+{
+  "messages": [
+    {"role": "system", "content": "あなたは親切なアシスタントです。"},
+    {"role": "user", "content": "こんにちは！"},
+    {"role": "assistant", "content": "こんにちは！何かお手伝いできることはありますか？"}
+  ]
+}

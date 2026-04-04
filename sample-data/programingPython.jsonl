@@ -1,0 +1,1 @@
+{"instruction": "Pythonで素数を判定する関数を書いて。", "output": "def is_prime(n):\n    if n < 2: return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0: return False\n    return True"}
