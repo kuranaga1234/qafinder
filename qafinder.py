@@ -17,6 +17,9 @@ import chromadb
 from rapidfuzz import fuzz
 from sentence_transformers import SentenceTransformer
 
+# ベクトル距離の閾値
+DIST_NO_MATCH = 0.5     # これを超えると関連情報なしと判断
+DIST_CANDIDATE = 0.25   # これを超えると関連情報はあるが候補列挙、以下なら最良回答を返す
 
 # カテゴリ一覧
 CATEGORIES = ["人事", "通勤", "給与", "その他"]
@@ -85,7 +88,7 @@ GREETING_RESPONSES: dict[str, list[str]] = {
     "またね":       ["またいつでもどうぞ。", "お疲れ様でした！"],
 }
 
-# 案B: fuzzy matching の閾値（0〜100、高いほど厳格）
+# fuzzy matching の閾値（0〜100、高いほど厳格）
 # 短いキーワード（≤4文字）は誤マッチしやすいため低めの閾値は使わない
 FUZZY_THRESHOLD = 85
 
@@ -177,7 +180,8 @@ def detect_categories(query: str) -> list[str]:
     """
     matched = []
     for category, keywords in CATEGORY_KEYWORDS.items():
-        if any(kw in query for kw in keywords):
+        norm_query = normalize(query)
+        if any(normalize(kw) in norm_query for kw in keywords):
             matched.append(category)
 
     # 「その他」は明示マッチしないので、未マッチ時のフォールバックとして全カテゴリ検索
@@ -321,11 +325,11 @@ class VectorChatBot:
         closest_distance = all_results[0][0]
 
         # 距離が0.5より大きい場合 → 関連情報なし
-        if closest_distance > 0.5:
+        if closest_distance > DIST_NO_MATCH:
             return "関連する情報が見つかりませんでした。"
 
         # 距離が0.25より大きい場合 → 候補を列挙
-        elif closest_distance > 0.25:
+        elif closest_distance > DIST_CANDIDATE:
             responses = ["以下の中に回答はありますか？："]
             for i, (distance, question, answer, cat) in enumerate(all_results[:3], 1):
                 # 案1: |区切り複数候補があればランダム選択
