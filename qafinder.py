@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 
 print("\r起動中です。。。", end="", flush=True)
 
@@ -35,6 +36,46 @@ CATEGORY_KEYWORDS = {
         "決算賞与", "支給", "報酬",
     ],
 }
+
+
+# ===== 案3: 挨拶ルール辞書 =====
+# キーワードをキー、回答候補リストを値とする辞書。
+# キーワードはqueryへの部分一致で判定する。
+GREETING_RESPONSES: dict[str, list[str]] = {
+    "こんにちは": ["良い天気ですね。", "こんにちは。", "ご機嫌はいかがですか。",
+                   "こんにちは！社内QAについてお答えします。何かお手伝いしましょうか？"],
+    "こんばんは": ["こんばんは。", "夜遅くまでお疲れ様です。", "ご機嫌はいかがですか。"],
+    "おはよう":   ["おはようございます。", "今日も一日頑張りましょう！", "良い朝ですね。"],
+    "はじめまして": ["はじめまして！社内QAについてお答えします。",
+                     "よろしくお願いします！何かお手伝いしましょうか？"],
+    "ありがとう": ["どういたしまして！", "お役に立てて嬉しいです。",
+                   "またいつでも聞いてくださいね。", "少しでもお力になれて良かったです。"],
+    "お疲れ様":   ["お疲れ様です！", "今日もお疲れ様でした。",
+                   "ゆっくり休んでくださいね。", "お疲れ様です！何かサポートできることはありますか？"],
+    "よろしく":   ["こちらこそよろしくお願いします！", "何でも聞いてください。"],
+    "さようなら": ["またいつでもどうぞ。", "お疲れ様でした！", "ご利用ありがとうございました。"],
+    "バイバイ":   ["またいつでもどうぞ。", "お疲れ様でした！"],
+}
+
+
+def try_greeting(query: str) -> str | None:
+    """
+    案3: クエリが挨拶キーワードにマッチすれば候補からランダムに1つ返す。
+    マッチしなければ None を返してベクトル検索へ進む。
+    """
+    for keyword, responses in GREETING_RESPONSES.items():
+        if keyword in query:
+            return random.choice(responses)
+    return None
+
+
+def pick_answer(raw_answer: str) -> str:
+    """
+    案1: answerが'|'区切りの複数候補ならランダムに1つ選ぶ。
+    単一回答ならそのまま返す。
+    """
+    candidates = [s.strip() for s in raw_answer.split("|") if s.strip()]
+    return random.choice(candidates) if candidates else raw_answer
 
 
 def detect_categories(query: str) -> list[str]:
@@ -146,6 +187,13 @@ class VectorChatBot:
 
     def ask(self, query: str) -> str:
         """ユーザーの質問に対してカテゴリを絞り込んで回答を検索する"""
+        # ── 案3: 挨拶ルール辞書で先に捌く ──────────────────────────
+        greeting = try_greeting(query)
+        if greeting is not None:
+            print("  ※ 検索カテゴリ: ルール辞書（挨拶）")
+            return greeting
+        # ────────────────────────────────────────────────────────────
+
         # 検索対象カテゴリを判定
         target_categories = detect_categories(query)
         category_label = "・".join(target_categories)
@@ -189,15 +237,17 @@ class VectorChatBot:
         elif closest_distance > 0.25:
             responses = ["以下の中に回答はありますか？："]
             for i, (distance, question, answer, cat) in enumerate(all_results[:3], 1):
+                # 案1: |区切り複数候補があればランダム選択
                 responses.append(
-                    f"{i}. 【{cat}】【質問】{question}  => 【回答】{answer}  (距離：{distance:.4f})"
+                    f"{i}. 【{cat}】【質問】{question}  => 【回答】{pick_answer(answer)}  (距離：{distance:.4f})"
                 )
             return "\n".join(responses)
 
         # 距離が0.25以下 → 最良の回答を返す
         else:
             _, _, answer, cat = all_results[0]
-            return f"【{cat}】{answer}  (距離：{closest_distance:.4f})"
+            # 案1: |区切り複数候補があればランダム選択
+            return f"【{cat}】{pick_answer(answer)}  (距離：{closest_distance:.4f})"
 
 
 # --- 実行セクション ---
