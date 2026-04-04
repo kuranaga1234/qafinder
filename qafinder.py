@@ -14,120 +14,201 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 
 
+# カテゴリ一覧
+CATEGORIES = ["人事", "通勤", "給与", "その他"]
+
+# カテゴリ判定キーワード辞書
+CATEGORY_KEYWORDS = {
+    "人事": [
+        "人事", "評価", "等級", "降格", "昇格", "昇進", "制度", "職種", "スペシャリスト",
+        "マネジメント", "ランク", "資格手当", "新卒", "コアバリュー", "市場価値",
+        "スキル", "採用", "入社", "退職", "規定", "問い合わせ", "フィードバック",
+    ],
+    "通勤": [
+        "通勤", "交通", "定期", "定期券", "バス", "電車", "鉄道", "バス停", "経路",
+        "らくらく", "らくらくBOSS", "申請", "承認", "代理", "手当", "実費",
+        "徒歩", "紛失", "割引", "障害者", "2km", "2Km",
+    ],
+    "給与": [
+        "給与", "給料", "賞与", "ボーナス", "基本給", "昇給", "減給", "手当",
+        "業績手当", "所得税", "非課税", "単価", "チャージ", "月給", "季節賞与",
+        "決算賞与", "支給", "報酬",
+    ],
+}
+
+
+def detect_categories(query: str) -> list[str]:
+    """
+    クエリのキーワードから検索対象カテゴリを判定する。
+    複数カテゴリにマッチする場合は複数返す。
+    どれにもマッチしない場合は全カテゴリを返す（全体検索）。
+    """
+    matched = []
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(kw in query for kw in keywords):
+            matched.append(category)
+
+    # 「その他」は明示マッチしないので、未マッチ時のフォールバックとして全カテゴリ検索
+    if not matched:
+        return CATEGORIES  # 全カテゴリを検索
+    return matched
+
+
+def collection_name(category: str) -> str:
+    """カテゴリ名をChromaDBのコレクション名に変換する（英数字のみ使用）"""
+    mapping = {
+        "人事": "qa_jinji",
+        "通勤": "qa_tsukin",
+        "給与": "qa_kyuyo",
+        "その他": "qa_sonota",
+    }
+    return mapping[category]
+
+
 class VectorChatBot:
     def __init__(self, jsonl_path, db_path="./my_vectordb"):
-        # 1. モデルの読み込み（おすすめの軽量・高精度モデル）
+        # 1. モデルの読み込み
         print("\rモデルを読み込んでいます...（初回は時間がかかります）", end="", flush=True)
         self.model = SentenceTransformer('intfloat/multilingual-e5-small')
-        
-        # 2. データベースの準備（フォルダに保存する設定）
+
+        # 2. データベースの準備
         self.client = chromadb.PersistentClient(path=db_path)
-        self.collection = self.client.get_or_create_collection(name="qa_collection")
-        
-        # 3. データの登録（DBが空の場合のみ実行）
-        if self.collection.count() == 0:
+
+        # 3. カテゴリごとにコレクションを作成・取得
+        self.collections = {}
+        for category in CATEGORIES:
+            self.collections[category] = self.client.get_or_create_collection(
+                name=collection_name(category)
+            )
+
+        # 4. いずれかのコレクションが空なら全データを再登録
+        any_empty = any(col.count() == 0 for col in self.collections.values())
+        if any_empty:
             print("\rデータベースにデータを登録しています...", end="", flush=True)
             self._load_and_index_data(jsonl_path)
         else:
-            print(f"\r既存のデータベース（{self.collection.count()}件）を使用します。", end="", flush=True)
+            counts = {cat: col.count() for cat, col in self.collections.items()}
+            summary = "、".join(f"{cat}:{n}件" for cat, n in counts.items())
+            print(f"\r既存のデータベース（{summary}）を使用します。", end="", flush=True)
 
     def _load_and_index_data(self, jsonl_path):
-        """JSONLを読み込んでベクトル化し、DBに保存する"""
+        """JSONLを読み込んでカテゴリ別にベクトル化し、DBに保存する"""
         if not os.path.exists(jsonl_path):
-            print(f"\rエラー: {jsonl_path} が見つかりません。", end="", flush=True)
+            print(f"\rエラー: {jsonl_path} が見つかりません。")
             return
 
-        documents = []
-        embeddings = []
-        metadatas = []
-        ids = []
-        questions = []
+        # カテゴリ別にデータを仕分け
+        data_by_category: dict[str, dict] = {
+            cat: {"questions": [], "documents": [], "metadatas": [], "ids": []}
+            for cat in CATEGORIES
+        }
 
         with open(jsonl_path, 'r', encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                # JSONLの各行は {"question": "質問文", "answer": "回答文"} の形式であることを想定
+            global_id = 0
+            for line in f:
                 try:
                     data = json.loads(line)
                     question = data.get('question')
                     answer = data.get('answer')
+                    category = data.get('category', 'その他')
                     if not question or not answer:
                         continue
+                    if category not in CATEGORIES:
+                        category = 'その他'
                 except json.JSONDecodeError:
                     continue
-                
-                # E5モデルのルール: 検索対象（DB側）には "passage: " をつける
-                questions.append(f"passage: {question}")
 
-                # ベクトル化は後でまとめて行うため、ここでは質問だけをリストに追加
-                documents.append(question)
-                metadatas.append({"answer": answer})
-                ids.append(f"id_{i}")
+                bucket = data_by_category[category]
+                bucket["questions"].append(f"passage: {question}")
+                bucket["documents"].append(question)
+                bucket["metadatas"].append({"answer": answer, "category": category})
+                bucket["ids"].append(f"id_{global_id}")
+                global_id += 1
 
-            # ベクトル化は一括で行う（効率のため）
+        # カテゴリごとにエンコード＆登録
+        for category, bucket in data_by_category.items():
+            if not bucket["questions"]:
+                continue
             embeddings = self.model.encode(
-                questions,
+                bucket["questions"],
                 batch_size=32,
-                show_progress_bar=True
+                show_progress_bar=False,
+            ).tolist()
+            self.collections[category].add(
+                documents=bucket["documents"],
+                embeddings=embeddings,
+                metadatas=bucket["metadatas"],
+                ids=bucket["ids"],
             )
+            print(f"\r  [{category}] {len(bucket['documents'])}件 登録完了", flush=True)
 
-        # DBへ一括登録
-        self.collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            ids=ids
-        )
-        print("\r登録が完了しました。", end="", flush=True)
+        print("\rすべてのカテゴリの登録が完了しました。", end="", flush=True)
 
-    def ask(self, query):
-        """ユーザーの質問に対して回答を検索する"""
+    def ask(self, query: str) -> str:
+        """ユーザーの質問に対してカテゴリを絞り込んで回答を検索する"""
+        # 検索対象カテゴリを判定
+        target_categories = detect_categories(query)
+        category_label = "・".join(target_categories)
+        print(f"  ※ 検索カテゴリ: {category_label}")
+
         # E5モデルのルール: 質問側には "query: " をつける
         query_vector = self.model.encode([f"query: {query}"]).tolist()
-        
-        # 似ているデータを3件まで取得
-        results = self.collection.query(
-            query_embeddings=query_vector,
-            n_results=3
-        )
 
-        if not results['ids'][0]:
+        # 対象カテゴリのコレクションをまとめて検索し、結果をフラット化
+        all_results = []  # (distance, question, answer, category)
+
+        for category in target_categories:
+            col = self.collections[category]
+            if col.count() == 0:
+                continue
+            results = col.query(
+                query_embeddings=query_vector,
+                n_results=min(3, col.count()),
+            )
+            if not results['ids'][0]:
+                continue
+            for question, meta, distance in zip(
+                results['documents'][0],
+                results['metadatas'][0],
+                results['distances'][0],
+            ):
+                all_results.append((distance, question, meta['answer'], meta.get('category', category)))
+
+        if not all_results:
             return "すみません、答えが見つかりませんでした。"
 
-        # 最も距離が近い結果の距離を確認
-        closest_distance = results['distances'][0][0]
-        
-        # 距離が0.5より大きい場合
+        # 距離でソートして最良の結果を取得
+        all_results.sort(key=lambda x: x[0])
+        closest_distance = all_results[0][0]
+
+        # 距離が0.5より大きい場合 → 関連情報なし
         if closest_distance > 0.5:
             return "関連する情報が見つかりませんでした。"
-        
-        # 距離が0.25より大きい場合（0.25 < distance <= 0.5）
+
+        # 距離が0.25より大きい場合 → 候補を列挙
         elif closest_distance > 0.25:
-            # 距離が近い順に答えを列挙する
-            responses = []
-            responses.append("以下の中に回答はありますか？：")
-            for i, (question, answer, distance) in enumerate(zip(
-                results['documents'][0],
-                [meta['answer'] for meta in results['metadatas'][0]],
-                results['distances'][0]
-            ), 1):
-                responses.append(f"{i}. 【質問】{question}  => 【回答】{answer}  (距離：{distance:.4f})")   # \n   【距離】{distance:.4f}
+            responses = ["以下の中に回答はありますか？："]
+            for i, (distance, question, answer, cat) in enumerate(all_results[:3], 1):
+                responses.append(
+                    f"{i}. 【{cat}】【質問】{question}  => 【回答】{answer}  (距離：{distance:.4f})"
+                )
             return "\n".join(responses)
-        
-        # 距離が0.25以下の場合
+
+        # 距離が0.25以下 → 最良の回答を返す
         else:
-            answer = results['metadatas'][0][0]['answer']
-            return answer + f"  (距離：{closest_distance:.4f})"
+            _, _, answer, cat = all_results[0]
+            return f"【{cat}】{answer}  (距離：{closest_distance:.4f})"
+
 
 # --- 実行セクション ---
 if __name__ == "__main__":
-    # 事前に dataset.jsonl を用意しておいてください
     bot = VectorChatBot("dataset.jsonl")
-    
+
     print("\nチャットボット準備完了！ (終了するには exit と入力)")
     while True:
         user_input = input("\n質問を入力してください: ")
         if user_input.lower() in ['exit', 'quit', '終了', 'えぃｔ', 'bye', 'びぇ', 'くいｔ']:
             break
-            
+
         response = bot.ask(user_input)
         print(f"ボットからの回答  : {response}")
