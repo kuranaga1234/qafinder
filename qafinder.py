@@ -257,7 +257,12 @@ class VectorChatBot:
                 bucket = data_by_category[category]
                 bucket["questions"].append(f"passage: {question}")
                 bucket["documents"].append(question)
-                bucket["metadatas"].append({"answer": answer, "category": category})
+                original_question = data.get('original_question', question)
+                bucket["metadatas"].append({
+                    "answer": answer,
+                    "category": category,
+                    "original_question": original_question
+                })
                 bucket["ids"].append(f"id_{global_id}")
                 global_id += 1
 
@@ -315,7 +320,13 @@ class VectorChatBot:
                 results['metadatas'][0],
                 results['distances'][0],
             ):
-                all_results.append((distance, question, meta['answer'], meta.get('category', category)))
+                all_results.append((
+                    distance,
+                    question,
+                    meta.get('original_question', question),
+                    meta['answer'],
+                    meta.get('category', category)
+                ))
 
         if not all_results:
             return "すみません、答えが見つかりませんでした。"
@@ -331,16 +342,26 @@ class VectorChatBot:
         # 距離が0.25より大きい場合 → 候補を列挙
         elif closest_distance > DIST_CANDIDATE:
             responses = ["以下の中に回答はありますか？："]
-            for i, (distance, question, answer, cat) in enumerate(all_results[:3], 1):
+            
+            # オリジナル質問による重複排除（最も距離が近いものを残す）
+            unique_results = {}
+            for result in all_results:
+                distance, question, original_q, answer, cat = result
+                if original_q not in unique_results or unique_results[original_q][0] > distance:
+                    unique_results[original_q] = result
+            
+            # 距離でソートして最初の3件を表示
+            unique_list = sorted(unique_results.values(), key=lambda x: x[0])
+            for i, (distance, question, original_q, answer, cat) in enumerate(unique_list[:3], 1):
                 # 案1: |区切り複数候補があればランダム選択
                 responses.append(
-                    f"{i}. 【{cat}】【質問】{question}  => 【回答】{pick_answer(answer)}  (距離：{distance:.4f})"
+                    f"{i}. 【{cat}】【質問】{original_q}  => 【回答】{pick_answer(answer)}  (距離：{distance:.4f})"
                 )
             return "\n".join(responses)
 
         # 距離が0.25以下 → 最良の回答を返す
         else:
-            _, _, answer, cat = all_results[0]
+            _, _, _, answer, cat = all_results[0]
             # 案1: |区切り複数候補があればランダム選択
             return f"【{cat}】{pick_answer(answer)}  (距離：{closest_distance:.4f})"
 
